@@ -1,0 +1,637 @@
+import React, { useState } from 'react';
+import { TrendingUp, Plus, X, Loader2, AlertCircle, CheckCircle, DollarSign, Calendar } from 'lucide-react';
+
+export default function StockRecommendationAgent() {
+  const [feeds, setFeeds] = useState([
+    { url: 'https://www.reddit.com/r/investing/.rss', enabled: false, name: 'r/investing' },
+    { url: 'https://www.reddit.com/r/stocks/.rss', enabled: false, name: 'r/stocks' },
+    { url: 'https://www.reddit.com/r/wallstreetbets/.rss', enabled: false, name: 'r/wallstreetbets' },
+    { url: 'https://www.reddit.com/r/valueinvesting/.rss', enabled: false, name: 'r/valueinvesting' }
+  ]);
+  const [newFeedUrl, setNewFeedUrl] = useState('');
+  const [newFeedName, setNewFeedName] = useState('');
+  const [timeRange, setTimeRange] = useState('7');
+  const [preferences, setPreferences] = useState('');
+  const [loading, setLoading] = useState(false);
+  const [recommendations, setRecommendations] = useState(null);
+  const [error, setError] = useState('');
+  const [logs, setLogs] = useState([]);
+  const [abortController, setAbortController] = useState(null);
+  const [copySuccess, setCopySuccess] = useState(false);
+
+  const addLog = (message, type = 'info') => {
+    setLogs(prev => [...prev, { message, type, time: new Date().toLocaleTimeString() }]);
+  };
+
+  const exportToGoogleSheets = () => {
+    if (!recommendations) return;
+
+    // Format data as TSV (Tab-Separated Values) for Google Sheets
+    const timestamp = new Date().toLocaleString();
+    const timeframe = recommendations.timeframe || `Last ${timeRange} days`;
+    
+    let tsvData = `Stock Analysis Results\t\t\t\t\t\nDate:\t${timestamp}\t\t\t\t\nTimeframe:\t${timeframe}\t\t\t\t\nMarket Sentiment:\t${recommendations.marketSentiment}\t\t\t\t\n\n`;
+    
+    // All Tickers Section
+    tsvData += `ALL TICKERS MENTIONED\nTicker\n`;
+    if (recommendations.tickersMentioned && recommendations.tickersMentioned.length > 0) {
+      recommendations.tickersMentioned.forEach(ticker => {
+        tsvData += `${ticker}\n`;
+      });
+    }
+    
+    // Detailed Analysis Section
+    tsvData += `\n\nDETAILED STOCK ANALYSIS\n`;
+    tsvData += `Ticker\tCompany\tPriority\tSentiment\tDiscussion Volume\tReason\tKey Points\n`;
+    
+    recommendations.stocks.forEach(stock => {
+      const keyPoints = stock.keyPoints.join('; ');
+      tsvData += `${stock.ticker}\t${stock.company}\t${stock.priority}\t${stock.sentiment}\t${stock.discussionVolume}\t${stock.reason}\t${keyPoints}\n`;
+    });
+    
+    // Copy to clipboard
+    navigator.clipboard.writeText(tsvData).then(() => {
+      setCopySuccess(true);
+      setTimeout(() => setCopySuccess(false), 3000);
+    }).catch(err => {
+      alert('Failed to copy. Please try again.');
+      console.error('Copy failed:', err);
+    });
+  };
+
+  const addFeed = () => {
+    if (newFeedUrl && !feeds.some(f => f.url === newFeedUrl)) {
+      const name = newFeedName || newFeedUrl.match(/r\/([^/]+)/)?.[1] || 'Custom Feed';
+      setFeeds([...feeds, { url: newFeedUrl, enabled: true, name }]);
+      setNewFeedUrl('');
+      setNewFeedName('');
+    }
+  };
+
+  const removeFeed = (index) => {
+    setFeeds(feeds.filter((_, i) => i !== index));
+  };
+
+  const toggleFeed = (index) => {
+    setFeeds(feeds.map((feed, i) => 
+      i === index ? { ...feed, enabled: !feed.enabled } : feed
+    ));
+  };
+
+  const cancelRequest = () => {
+    if (abortController) {
+      abortController.abort();
+      addLog('Request cancelled by user', 'warning');
+      setError('Request cancelled');
+      setLoading(false);
+    }
+  };
+
+  const analyzeStocks = async () => {
+    const enabledFeeds = feeds.filter(f => f.enabled);
+    
+    if (enabledFeeds.length === 0) {
+      setError('Please enable at least one feed to analyze');
+      return;
+    }
+
+    setLoading(true);
+    setError('');
+    setRecommendations(null);
+    setLogs([]);
+    
+    addLog('Starting stock discussion analysis...', 'info');
+    addLog(`Analyzing ${enabledFeeds.length} feed(s) from last ${timeRange} days`, 'info');
+
+    // Create abort controller
+    const controller = new AbortController();
+    setAbortController(controller);
+
+    try {
+      const feedNames = enabledFeeds.map(f => f.name).join(', ');
+      const searchSites = enabledFeeds.map(f => {
+        const match = f.url.match(/reddit\.com\/r\/([^/]+)/);
+        return match ? `site:reddit.com/r/${match[1]}` : '';
+      }).filter(Boolean).join(' OR ');
+
+      const timeRangeText = timeRange === '1' ? 'today' : 
+                           timeRange === '7' ? 'past week' :
+                           timeRange === '14' ? 'past 2 weeks' :
+                           timeRange === '30' ? 'past month' :
+                           `past ${timeRange} days`;
+
+      const searchQuery = `${searchSites} stock discussion ${timeRangeText}`;
+      addLog(`Search query: ${searchQuery}`, 'info');
+
+      // Add timeout (45 seconds)
+      const timeoutId = setTimeout(() => controller.abort(), 45000);
+
+      addLog('Sending request to Claude API...', 'info');
+
+      const response = await fetch('https://api.anthropic.com/v1/messages', {
+        signal: controller.signal,
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-20250514',
+          max_tokens: 3000,
+          tools: [{
+            type: "web_search_20250305",
+            name: "web_search"
+          }],
+          messages: [{
+            role: 'user',
+            content: `You are a stock analysis recommendation engine. Search Reddit investing discussions to find which stocks are being actively discussed.
+
+Feeds to analyze: ${feedNames}
+Time range: Last ${timeRange} days (focus on recent discussions from ${timeRangeText})
+
+Your task:
+1. Search for stock discussions from the past ${timeRange} days on: ${feedNames}
+2. Extract ALL ticker symbols mentioned in the discussions (CRWD, SNOW, NET, MDB, ASAN, U, AAPL, TSLA, etc.)
+3. Identify which stocks/tickers are being talked about the most RECENTLY (within the time range)
+4. Determine the sentiment and key discussion points for each stock
+5. Recommend which stocks are worth analyzing further and why
+
+IMPORTANT: Focus only on discussions from the last ${timeRange} days. Prioritize more recent posts.
+
+CRITICAL: Your response must be ONLY the JSON object below. Do not include any explanatory text, preamble, or commentary before or after the JSON. Start your response with { and end with }. Nothing else.
+
+JSON format:
+{
+  "tickersMentioned": ["ALL tickers found in discussions, sorted by market cap from LARGEST to SMALLEST (e.g., AAPL, MSFT, GOOGL, NVDA first, then smaller caps)"],
+  "stocks": [
+    {
+      "ticker": "AAPL",
+      "company": "Apple Inc.",
+      "discussionVolume": "high/medium/low",
+      "sentiment": "bullish/neutral/bearish",
+      "keyPoints": ["point 1", "point 2", "point 3"],
+      "reason": "why this stock is worth analyzing (2-3 sentences)",
+      "priority": "high/medium/low",
+      "recentActivity": "description of recent discussion activity"
+    }
+  ],
+  "summary": "2-3 sentence overview of what's trending in the investment community in the last ${timeRange} days",
+  "marketSentiment": "overall market sentiment from recent discussions",
+  "timeframe": "last ${timeRange} days"
+}
+
+Recommend 6-10 stocks that are being actively discussed in the specified timeframe.`
+          }]
+        })
+      });
+
+      addLog('Waiting for API response... (this may take 30-45 seconds)', 'info');
+      addLog('API request sent', 'success');
+
+      if (!response.ok) {
+        clearTimeout(timeoutId);
+        throw new Error(`API returned ${response.status}: ${response.statusText}`);
+      }
+
+      const data = await response.json();
+      clearTimeout(timeoutId);
+      addLog('API response received', 'success');
+      console.log('Full API response:', data);
+
+      let allText = '';
+      for (const block of data.content) {
+        if (block.type === 'text') {
+          allText += block.text + '\n';
+        }
+      }
+
+      addLog('Parsing response...', 'info');
+      console.log('Raw text:', allText);
+
+      // More aggressive JSON extraction
+      let jsonText = allText.trim();
+      
+      // Remove markdown code blocks
+      jsonText = jsonText.replace(/```json\s*/gi, '').replace(/```\s*/g, '');
+      
+      // Find JSON object - look for opening brace and matching closing brace
+      const startIdx = jsonText.indexOf('{');
+      if (startIdx === -1) {
+        throw new Error('No JSON object found in response');
+      }
+      
+      // Find the matching closing brace
+      let braceCount = 0;
+      let endIdx = -1;
+      for (let i = startIdx; i < jsonText.length; i++) {
+        if (jsonText[i] === '{') braceCount++;
+        if (jsonText[i] === '}') braceCount--;
+        if (braceCount === 0) {
+          endIdx = i;
+          break;
+        }
+      }
+      
+      if (endIdx === -1) {
+        throw new Error('Incomplete JSON object in response');
+      }
+      
+      jsonText = jsonText.substring(startIdx, endIdx + 1);
+
+      console.log('Extracted JSON:', jsonText);
+      addLog('JSON extracted, parsing...', 'info');
+
+      let parsed;
+      try {
+        parsed = JSON.parse(jsonText);
+      } catch (parseErr) {
+        addLog('First parse attempt failed, trying alternative extraction...', 'warning');
+        console.error('Parse error:', parseErr);
+        
+        // Last resort: look for the stocks array pattern
+        const stocksMatch = allText.match(/"stocks"\s*:\s*\[([\s\S]*?)\]/);
+        if (stocksMatch) {
+          // Try to reconstruct a valid JSON object
+          const summaryMatch = allText.match(/"summary"\s*:\s*"([^"]+)"/);
+          const sentimentMatch = allText.match(/"marketSentiment"\s*:\s*"([^"]+)"/);
+          
+          parsed = {
+            stocks: [],
+            summary: summaryMatch ? summaryMatch[1] : "Unable to extract summary",
+            marketSentiment: sentimentMatch ? sentimentMatch[1] : "neutral"
+          };
+          
+          // Try to parse individual stocks
+          const stockPattern = /\{\s*"ticker"\s*:\s*"([^"]+)"[\s\S]*?\}/g;
+          let match;
+          while ((match = stockPattern.exec(allText)) !== null) {
+            try {
+              const stockObj = JSON.parse(match[0]);
+              parsed.stocks.push(stockObj);
+            } catch (e) {
+              console.error('Could not parse stock:', match[0]);
+            }
+          }
+        } else {
+          throw parseErr;
+        }
+      }
+      
+      addLog('JSON parsed successfully!', 'success');
+      
+      if (!parsed.stocks || !Array.isArray(parsed.stocks)) {
+        throw new Error('Response missing stocks array');
+      }
+
+      // Ensure tickersMentioned exists (make it optional)
+      if (!parsed.tickersMentioned) {
+        parsed.tickersMentioned = parsed.stocks.map(s => s.ticker).filter(Boolean);
+        addLog('Generated tickers list from stocks', 'info');
+      }
+
+      setRecommendations(parsed);
+      addLog(`Found ${parsed.stocks.length} stock recommendations`, 'success');
+      
+    } catch (err) {
+      if (err.name === 'AbortError') {
+        addLog('Request timed out after 45 seconds', 'error');
+        setError('⏱️ Request timed out. This usually means:\n\n1. API rate limiting (too many requests)\n2. High server load\n\n💡 Solution: Wait 10-15 minutes before trying again, or try with just ONE feed selected.');
+      } else {
+        addLog(`Error: ${err.message}`, 'error');
+        console.error('Full error:', err);
+        setError(err.message);
+      }
+    } finally {
+      setLoading(false);
+      setAbortController(null);
+    }
+  };
+
+  const getSentimentColor = (sentiment) => {
+    if (sentiment === 'bullish') return 'text-green-600 bg-green-50';
+    if (sentiment === 'bearish') return 'text-red-600 bg-red-50';
+    return 'text-gray-600 bg-gray-50';
+  };
+
+  const getSentimentIcon = (sentiment) => {
+    if (sentiment === 'bullish') return '📈';
+    if (sentiment === 'bearish') return '📉';
+    return '➡️';
+  };
+
+  const enabledCount = feeds.filter(f => f.enabled).length;
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-indigo-50 p-6">
+      <div className="max-w-5xl mx-auto">
+        {/* Header */}
+        <div className="text-center mb-8">
+          <div className="flex items-center justify-center gap-3 mb-3">
+            <TrendingUp className="w-8 h-8 text-blue-600" />
+            <h1 className="text-4xl font-bold text-gray-900">Stock Analysis Agent</h1>
+          </div>
+          <p className="text-gray-600">AI-powered stock recommendations based on Reddit discussions</p>
+          {enabledCount === 0 && (
+            <p className="mt-2 text-sm text-amber-600">💡 Select at least one feed below to get started</p>
+          )}
+        </div>
+
+        {/* Time Range Selector */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <Calendar className="w-5 h-5" />
+            Time Range
+          </h2>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[
+              { value: '1', label: 'Last 24 Hours' },
+              { value: '7', label: 'Last 7 Days' },
+              { value: '14', label: 'Last 14 Days' },
+              { value: '30', label: 'Last 30 Days' }
+            ].map(option => (
+              <button
+                key={option.value}
+                onClick={() => setTimeRange(option.value)}
+                className={`px-4 py-3 rounded-lg font-medium transition-all ${
+                  timeRange === option.value
+                    ? 'bg-blue-600 text-white shadow-md'
+                    : 'bg-gray-100 text-gray-700 hover:bg-gray-200'
+                }`}
+              >
+                {option.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Feed Selection */}
+        <div className="bg-white rounded-xl shadow-lg p-6 mb-6">
+          <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
+            <DollarSign className="w-5 h-5" />
+            Select Feeds to Analyze ({enabledCount} selected)
+          </h2>
+          
+          <div className="space-y-3 mb-4">
+            {feeds.map((feed, index) => (
+              <div key={index} className="flex items-center gap-3 bg-gray-50 p-4 rounded-lg">
+                <input
+                  type="checkbox"
+                  checked={feed.enabled}
+                  onChange={() => toggleFeed(index)}
+                  className="w-5 h-5 text-blue-600 rounded focus:ring-2 focus:ring-blue-500"
+                />
+                <div className="flex-1">
+                  <div className="font-medium text-gray-900">{feed.name}</div>
+                  <div className="text-sm text-gray-500 truncate">{feed.url}</div>
+                </div>
+                <button
+                  onClick={() => removeFeed(index)}
+                  className="text-red-500 hover:text-red-700 transition-colors"
+                >
+                  <X className="w-4 h-4" />
+                </button>
+              </div>
+            ))}
+          </div>
+
+          <div className="border-t pt-4">
+            <p className="text-sm font-medium text-gray-700 mb-2">Add New Feed</p>
+            <div className="flex gap-2">
+              <input
+                type="text"
+                value={newFeedName}
+                onChange={(e) => setNewFeedName(e.target.value)}
+                placeholder="Name (e.g., r/SecurityAnalysis)"
+                className="w-1/3 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+              />
+              <input
+                type="text"
+                value={newFeedUrl}
+                onChange={(e) => setNewFeedUrl(e.target.value)}
+                placeholder="RSS Feed URL"
+                className="flex-1 px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                onKeyPress={(e) => e.key === 'Enter' && addFeed()}
+              />
+              <button
+                onClick={addFeed}
+                className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
+              >
+                <Plus className="w-4 h-4" />
+                Add
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {/* Analyze Button */}
+        <div className="space-y-3">
+          <button
+            onClick={analyzeStocks}
+            disabled={loading || enabledCount === 0}
+            className="w-full bg-gradient-to-r from-blue-600 to-indigo-600 text-white py-4 rounded-xl font-semibold text-lg hover:from-blue-700 hover:to-indigo-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all shadow-lg hover:shadow-xl flex items-center justify-center gap-3"
+          >
+            {loading ? (
+              <>
+                <Loader2 className="w-6 h-6 animate-spin" />
+                Analyzing discussions...
+              </>
+            ) : (
+              <>
+                <TrendingUp className="w-6 h-6" />
+                Find Stocks to Analyze
+              </>
+            )}
+          </button>
+
+          {loading && (
+            <button
+              onClick={cancelRequest}
+              className="w-full bg-red-600 text-white py-3 rounded-xl font-semibold hover:bg-red-700 transition-all shadow-md flex items-center justify-center gap-2"
+            >
+              <X className="w-5 h-5" />
+              Cancel Request
+            </button>
+          )}
+        </div>
+
+        {/* Debug Logs */}
+        {logs.length > 0 && (
+          <div className="mt-6 bg-gray-900 text-gray-100 rounded-xl p-4 font-mono text-sm">
+            <h3 className="font-bold mb-2 text-white">Debug Log:</h3>
+            <div className="space-y-1 max-h-60 overflow-y-auto">
+              {logs.map((log, i) => (
+                <div key={i} className="flex items-start gap-2">
+                  <span className="text-gray-500">[{log.time}]</span>
+                  {log.type === 'success' && <CheckCircle className="w-4 h-4 text-green-400 flex-shrink-0 mt-0.5" />}
+                  {log.type === 'error' && <AlertCircle className="w-4 h-4 text-red-400 flex-shrink-0 mt-0.5" />}
+                  <span className={
+                    log.type === 'success' ? 'text-green-400' :
+                    log.type === 'error' ? 'text-red-400' :
+                    'text-gray-300'
+                  }>{log.message}</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+
+        {/* Error */}
+        {error && (
+          <div className="mt-6 bg-red-50 border border-red-200 text-red-700 px-4 py-3 rounded-lg flex items-start gap-3">
+            <AlertCircle className="w-5 h-5 flex-shrink-0 mt-0.5" />
+            <div>
+              <p className="font-semibold">Error</p>
+              <p className="text-sm">{error}</p>
+            </div>
+          </div>
+        )}
+
+        {/* Stock Recommendations */}
+        {recommendations && (
+          <div className="mt-8 space-y-6">
+            {/* Export Button */}
+            <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200 flex items-center justify-between">
+              <div>
+                <h3 className="font-semibold text-gray-900 mb-1">📊 Export to Google Sheets</h3>
+                <p className="text-sm text-gray-600">Copy data, then paste into Google Sheets (Ctrl+V / Cmd+V)</p>
+              </div>
+              <button
+                onClick={exportToGoogleSheets}
+                className="px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all shadow-md hover:shadow-lg flex items-center gap-2"
+              >
+                {copySuccess ? (
+                  <>
+                    <CheckCircle className="w-5 h-5" />
+                    Copied!
+                  </>
+                ) : (
+                  <>
+                    📋 Copy Data
+                  </>
+                )}
+              </button>
+            </div>
+
+            {/* All Tickers Mentioned */}
+            {recommendations.tickersMentioned && recommendations.tickersMentioned.length > 0 && (
+              <div className="bg-white rounded-xl p-6 shadow-lg border border-gray-200">
+                <h2 className="text-xl font-semibold mb-4 text-gray-900">📋 All Tickers Mentioned</h2>
+                <div className="flex flex-wrap gap-2">
+                  {recommendations.tickersMentioned.map((ticker, index) => (
+                    <span
+                      key={index}
+                      className="px-3 py-2 bg-blue-100 text-blue-800 rounded-lg font-mono font-semibold text-sm"
+                    >
+                      ${ticker}
+                    </span>
+                  ))}
+                </div>
+                <p className="mt-3 text-sm text-gray-500">
+                  Total: {recommendations.tickersMentioned.length} ticker{recommendations.tickersMentioned.length !== 1 ? 's' : ''}
+                </p>
+              </div>
+            )}
+
+            {/* Market Overview */}
+            <div className="bg-gradient-to-r from-blue-50 to-indigo-50 rounded-xl p-6 border border-blue-100">
+              <div className="flex items-center justify-between mb-3">
+                <h2 className="text-xl font-semibold text-blue-900">📊 Market Sentiment</h2>
+                <span className="px-3 py-1 bg-blue-100 text-blue-700 rounded-full text-sm font-medium">
+                  {recommendations.timeframe || `Last ${timeRange} days`}
+                </span>
+              </div>
+              <p className="text-gray-700 leading-relaxed mb-2">{recommendations.summary}</p>
+              <p className="text-sm text-gray-600 italic">Overall sentiment: {recommendations.marketSentiment}</p>
+            </div>
+
+            {/* Stock Grid */}
+            <div>
+              <h2 className="text-2xl font-bold mb-4">🎯 Stocks Worth Analyzing</h2>
+              <div className="grid gap-4 md:grid-cols-2">
+                {recommendations.stocks.map((stock, index) => (
+                  <div
+                    key={index}
+                    className={`bg-white rounded-xl p-6 shadow-md border-l-4 hover:shadow-lg transition-all ${
+                      stock.priority === 'high' ? 'border-red-500' :
+                      stock.priority === 'medium' ? 'border-yellow-500' :
+                      'border-green-500'
+                    }`}
+                  >
+                    {/* Header */}
+                    <div className="flex items-start justify-between mb-3">
+                      <div>
+                        <div className="flex items-center gap-2 mb-1">
+                          <h3 className="text-2xl font-bold text-gray-900">{stock.ticker}</h3>
+                          <span className={`px-2 py-1 text-xs font-bold rounded-full ${
+                            stock.priority === 'high' ? 'bg-red-100 text-red-700' :
+                            stock.priority === 'medium' ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-green-100 text-green-700'
+                          }`}>
+                            {stock.priority.toUpperCase()}
+                          </span>
+                        </div>
+                        <p className="text-sm text-gray-600">{stock.company}</p>
+                      </div>
+                      <div className="text-right">
+                        <div className="text-2xl mb-1">
+                          {getSentimentIcon(stock.sentiment)}
+                        </div>
+                        <span className={`px-2 py-1 text-xs font-semibold rounded ${getSentimentColor(stock.sentiment)}`}>
+                          {stock.sentiment}
+                        </span>
+                      </div>
+                    </div>
+
+                    {/* Recent Activity */}
+                    {stock.recentActivity && (
+                      <div className="mb-3 p-2 bg-blue-50 rounded-lg">
+                        <p className="text-xs text-blue-800">{stock.recentActivity}</p>
+                      </div>
+                    )}
+
+                    {/* Discussion Volume */}
+                    <div className="mb-3">
+                      <span className="text-xs font-semibold text-gray-500 uppercase">Discussion Volume</span>
+                      <div className="flex items-center gap-2 mt-1">
+                        <div className="flex-1 bg-gray-200 rounded-full h-2">
+                          <div 
+                            className={`h-2 rounded-full ${
+                              stock.discussionVolume === 'high' ? 'bg-green-500 w-full' :
+                              stock.discussionVolume === 'medium' ? 'bg-yellow-500 w-2/3' :
+                              'bg-gray-400 w-1/3'
+                            }`}
+                          />
+                        </div>
+                        <span className="text-xs font-medium text-gray-600">{stock.discussionVolume}</span>
+                      </div>
+                    </div>
+
+                    {/* Key Discussion Points */}
+                    <div className="mb-3">
+                      <span className="text-xs font-semibold text-gray-500 uppercase mb-2 block">Key Points</span>
+                      <ul className="space-y-1">
+                        {stock.keyPoints.slice(0, 3).map((point, i) => (
+                          <li key={i} className="text-sm text-gray-700 flex items-start gap-2">
+                            <span className="text-blue-500 mt-1">•</span>
+                            <span>{point}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+
+                    {/* Analysis Recommendation */}
+                    <div className="pt-3 border-t border-gray-100">
+                      <p className="text-sm text-gray-700 leading-relaxed">
+                        <span className="font-semibold text-gray-900">Why analyze: </span>
+                        {stock.reason}
+                      </p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
