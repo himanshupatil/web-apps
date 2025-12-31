@@ -18,6 +18,58 @@ export default function StockRecommendationAgent() {
   const [logs, setLogs] = useState([]);
   const [abortController, setAbortController] = useState(null);
   const [copySuccess, setCopySuccess] = useState(false);
+  const [lastSaved, setLastSaved] = useState(null);
+
+  // Load saved results on mount
+  React.useEffect(() => {
+    const loadSavedResults = async () => {
+      try {
+        const saved = await window.storage.get('stock-analysis-results');
+        if (saved && saved.value) {
+          const data = JSON.parse(saved.value);
+          setRecommendations(data.recommendations);
+          setLastSaved(new Date(data.timestamp));
+          addLog('Loaded previous analysis from storage', 'success');
+        }
+      } catch (err) {
+        console.log('No saved results found');
+      }
+    };
+    loadSavedResults();
+  }, []);
+
+  // Auto-save results whenever recommendations change
+  React.useEffect(() => {
+    const saveResults = async () => {
+      if (recommendations) {
+        try {
+          const dataToSave = {
+            recommendations,
+            timestamp: new Date().toISOString(),
+            timeRange,
+            feeds: feeds.filter(f => f.enabled).map(f => f.name)
+          };
+          await window.storage.set('stock-analysis-results', JSON.stringify(dataToSave));
+          setLastSaved(new Date());
+          console.log('Results auto-saved');
+        } catch (err) {
+          console.error('Failed to save results:', err);
+        }
+      }
+    };
+    saveResults();
+  }, [recommendations]);
+
+  const clearSavedResults = async () => {
+    try {
+      await window.storage.delete('stock-analysis-results');
+      setRecommendations(null);
+      setLastSaved(null);
+      addLog('Cleared saved results', 'info');
+    } catch (err) {
+      console.error('Failed to clear results:', err);
+    }
+  };
 
   const addLog = (message, type = 'info') => {
     setLogs(prev => [...prev, { message, type, time: new Date().toLocaleTimeString() }]);
@@ -488,27 +540,45 @@ Recommend 6-10 stocks that are being actively discussed in the specified timefra
         {/* Stock Recommendations */}
         {recommendations && (
           <div className="mt-8 space-y-6">
-            {/* Export Button */}
-            <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200 flex items-center justify-between">
-              <div>
-                <h3 className="font-semibold text-gray-900 mb-1">📊 Export to Google Sheets</h3>
-                <p className="text-sm text-gray-600">Copy data, then paste into Google Sheets (Ctrl+V / Cmd+V)</p>
+            {/* Export and Info Bar */}
+            <div className="space-y-3">
+              {/* Last Saved Info */}
+              {lastSaved && (
+                <div className="bg-blue-50 rounded-lg p-3 border border-blue-200 flex items-center justify-between">
+                  <p className="text-sm text-blue-800">
+                    💾 Results auto-saved • Last saved: {lastSaved.toLocaleTimeString()}
+                  </p>
+                  <button
+                    onClick={clearSavedResults}
+                    className="text-sm text-blue-600 hover:text-blue-800 font-medium"
+                  >
+                    Clear
+                  </button>
+                </div>
+              )}
+              
+              {/* Export Button */}
+              <div className="bg-gradient-to-r from-green-50 to-emerald-50 rounded-xl p-4 border border-green-200 flex items-center justify-between">
+                <div>
+                  <h3 className="font-semibold text-gray-900 mb-1">📊 Export to Google Sheets</h3>
+                  <p className="text-sm text-gray-600">Copy data, then paste into Google Sheets (Ctrl+V / Cmd+V)</p>
+                </div>
+                <button
+                  onClick={exportToGoogleSheets}
+                  className="px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all shadow-md hover:shadow-lg flex items-center gap-2"
+                >
+                  {copySuccess ? (
+                    <>
+                      <CheckCircle className="w-5 h-5" />
+                      Copied!
+                    </>
+                  ) : (
+                    <>
+                      📋 Copy Data
+                    </>
+                  )}
+                </button>
               </div>
-              <button
-                onClick={exportToGoogleSheets}
-                className="px-6 py-3 bg-green-600 text-white rounded-lg font-semibold hover:bg-green-700 transition-all shadow-md hover:shadow-lg flex items-center gap-2"
-              >
-                {copySuccess ? (
-                  <>
-                    <CheckCircle className="w-5 h-5" />
-                    Copied!
-                  </>
-                ) : (
-                  <>
-                    📋 Copy Data
-                  </>
-                )}
-              </button>
             </div>
 
             {/* All Tickers Mentioned */}
