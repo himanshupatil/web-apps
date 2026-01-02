@@ -1,0 +1,418 @@
+import React, { useState, useEffect } from 'react';
+import { BookOpen, Plus, Trash2, Edit2, Target, TrendingUp, Calendar } from 'lucide-react';
+
+const ReadingTracker = () => {
+  const [books, setBooks] = useState([]);
+  const [selectedBook, setSelectedBook] = useState('');
+  const [pagesRead, setPagesRead] = useState('');
+  const [isAddingBook, setIsAddingBook] = useState(false);
+  const [newBookTitle, setNewBookTitle] = useState('');
+  const [newBookAuthor, setNewBookAuthor] = useState('');
+  const [newBookPages, setNewBookPages] = useState('');
+  const [editingBook, setEditingBook] = useState(null);
+  const [loading, setLoading] = useState(true);
+
+  const defaultBooks = [
+    { title: "The Big Short", author: "Michael Lewis", pages: 266 },
+    { title: "When Genius Failed", author: "Roger Lowenstein", pages: 264 },
+    { title: "The Intelligent Investor", author: "Benjamin Graham", pages: 623 },
+    { title: "Business Adventures", author: "John Brooks", pages: 464 },
+    { title: "The Most Important Thing", author: "Howard Marks", pages: 196 },
+    { title: "Thinking, Fast and Slow", author: "Daniel Kahneman", pages: 499 },
+    { title: "Liar's Poker", author: "Michael Lewis", pages: 249 },
+    { title: "Against the Gods", author: "Peter Bernstein", pages: 400 },
+    { title: "Barbarians at the Gate", author: "Bryan Burrough & John Helyar", pages: 592 },
+    { title: "The Snowball: Warren Buffett", author: "Alice Schroeder", pages: 976 }
+  ];
+
+  useEffect(() => {
+    loadData();
+  }, []);
+
+  useEffect(() => {
+    // Auto-save books whenever they change
+    if (!loading && books.length > 0) {
+      const saveData = async () => {
+        try {
+          await window.storage.set('reading-books', JSON.stringify(books));
+        } catch (error) {
+          console.error('Error auto-saving books:', error);
+        }
+      };
+      saveData();
+    }
+  }, [books, loading]);
+
+  const loadData = async () => {
+    try {
+      const booksData = await window.storage.get('reading-books');
+      
+      if (booksData) {
+        const loadedBooks = JSON.parse(booksData.value);
+        setBooks(loadedBooks);
+      } else {
+        const initialBooks = defaultBooks.map((book, index) => ({
+          id: `book-${index}`,
+          title: book.title,
+          author: book.author,
+          totalPages: book.pages,
+          pagesRead: 0
+        }));
+        setBooks(initialBooks);
+        await window.storage.set('reading-books', JSON.stringify(initialBooks));
+      }
+    } catch (error) {
+      console.error('Error loading data:', error);
+      const initialBooks = defaultBooks.map((book, index) => ({
+        id: `book-${index}`,
+        title: book.title,
+        author: book.author,
+        totalPages: book.pages,
+        pagesRead: 0
+      }));
+      setBooks(initialBooks);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleAddPages = () => {
+    if (!selectedBook || !pagesRead) return;
+
+    const updatedBooks = books.map(book => {
+      if (book.id === selectedBook) {
+        return {
+          ...book,
+          pagesRead: Math.min(book.pagesRead + parseInt(pagesRead), book.totalPages)
+        };
+      }
+      return book;
+    });
+
+    setBooks(updatedBooks);
+    setPagesRead('');
+  };
+
+  const handleAddBook = () => {
+    if (!newBookTitle || !newBookAuthor || !newBookPages) return;
+
+    const newBook = {
+      id: `book-${Date.now()}`,
+      title: newBookTitle,
+      author: newBookAuthor,
+      totalPages: parseInt(newBookPages),
+      pagesRead: 0
+    };
+
+    setBooks([...books, newBook]);
+    setNewBookTitle('');
+    setNewBookAuthor('');
+    setNewBookPages('');
+    setIsAddingBook(false);
+  };
+
+  const handleDeleteBook = (bookId) => {
+    setBooks(books.filter(book => book.id !== bookId));
+    if (selectedBook === bookId) {
+      setSelectedBook('');
+    }
+  };
+
+  const handleEditBook = (book) => {
+    setEditingBook(book);
+  };
+
+  const handleSaveEdit = () => {
+    if (!editingBook) return;
+
+    const updatedBooks = books.map(book => 
+      book.id === editingBook.id ? editingBook : book
+    );
+
+    setBooks(updatedBooks);
+    setEditingBook(null);
+  };
+
+  const totalPagesRead = books.reduce((sum, book) => sum + book.pagesRead, 0);
+  const totalPages = books.reduce((sum, book) => sum + book.totalPages, 0);
+  const yearlyGoal = totalPages;
+  const progressPercent = totalPages > 0 ? (totalPagesRead / totalPages) * 100 : 0;
+
+  const today = new Date();
+  const startOfYear = new Date(today.getFullYear(), 0, 1);
+  const endDate = new Date(today.getFullYear(), 7, 30); // August 30th (month is 0-indexed)
+  const daysPassed = Math.floor((today - startOfYear) / (1000 * 60 * 60 * 24)) + 1;
+  const daysRemaining = Math.floor((endDate - today) / (1000 * 60 * 60 * 24)) + 1;
+  
+  const totalDays = Math.floor((endDate - startOfYear) / (1000 * 60 * 60 * 24)) + 1;
+  const expectedPages = (yearlyGoal / totalDays) * daysPassed;
+  const pagesAheadBehind = totalPagesRead - expectedPages;
+  const adjustedDailyGoal = daysRemaining > 0 ? (yearlyGoal - totalPagesRead) / daysRemaining : 0;
+  const baseDailyGoal = yearlyGoal / totalDays;
+
+  if (loading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8 flex items-center justify-center">
+        <div className="text-xl text-gray-600">Loading your reading tracker...</div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="min-h-screen bg-gradient-to-br from-blue-50 to-indigo-100 p-8" style={{ fontFamily: 'Calibri, sans-serif' }}>
+      <div className="max-w-6xl mx-auto">
+        <div className="bg-white rounded-2xl shadow-xl p-8 mb-6">
+                      <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center gap-3">
+              <BookOpen className="w-8 h-8 text-indigo-600" />
+              <h1 className="text-3xl font-bold text-gray-800">2026 Reading Goal - Finish by Aug 30</h1>
+            </div>
+            <div className="text-right">
+              <div className="text-sm text-gray-500">Books in List</div>
+              <div className="text-2xl font-bold text-indigo-600">{books.length}</div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
+            <div className="bg-gradient-to-br from-indigo-50 to-indigo-100 rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Target className="w-5 h-5 text-indigo-600" />
+                <div className="text-sm font-medium text-gray-600">Total Progress</div>
+              </div>
+              <div className="text-3xl font-bold text-indigo-700 mb-2">
+                {totalPagesRead.toLocaleString()} / {totalPages.toLocaleString()}
+              </div>
+              <div className="w-full bg-gray-200 rounded-full h-3">
+                <div 
+                  className="bg-indigo-600 h-3 rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(progressPercent, 100)}%` }}
+                />
+              </div>
+              <div className="text-sm text-gray-600 mt-2">{progressPercent.toFixed(1)}% complete</div>
+            </div>
+
+            <div className="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <Calendar className="w-5 h-5 text-green-600" />
+                <div className="text-sm font-medium text-gray-600">Daily Goal (Adjusted)</div>
+              </div>
+              <div className="text-3xl font-bold text-green-700 mb-1">
+                {Math.round(adjustedDailyGoal)} pages
+              </div>
+              <div className="text-sm text-gray-600">
+                Base goal: {Math.round(baseDailyGoal)} pages/day
+              </div>
+              <div className="text-sm text-gray-600">
+                {daysRemaining} days remaining
+              </div>
+            </div>
+
+            <div className="bg-gradient-to-br from-purple-50 to-purple-100 rounded-xl p-6">
+              <div className="flex items-center gap-2 mb-2">
+                <TrendingUp className="w-5 h-5 text-purple-600" />
+                <div className="text-sm font-medium text-gray-600">You're</div>
+              </div>
+              <div className={`text-3xl font-bold mb-1 ${pagesAheadBehind >= 0 ? 'text-green-700' : 'text-orange-700'}`}>
+                {Math.abs(Math.round(pagesAheadBehind))} pages
+              </div>
+              <div className="text-sm text-gray-600">
+                {pagesAheadBehind >= 0 ? 'ahead of schedule' : 'behind schedule'}
+              </div>
+              <div className="text-sm text-gray-600">
+                Expected: {Math.round(expectedPages)} pages by day {daysPassed}
+              </div>
+            </div>
+          </div>
+
+          <div className="bg-gray-50 rounded-xl p-4 mb-6">
+            <div className="flex items-center justify-between">
+              <div className="text-sm font-medium text-gray-600">Yearly Goal (Total Book Pages)</div>
+              <span className="text-2xl font-bold text-gray-800">{yearlyGoal.toLocaleString()} pages</span>
+            </div>
+            <div className="text-xs text-gray-500 mt-1">Auto-adjusts when you add or remove books</div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          <div className="bg-white rounded-2xl shadow-xl p-6">
+            <h2 className="text-xl font-bold text-gray-800 mb-4">Log Your Reading</h2>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Select Book
+                </label>
+                <select
+                  value={selectedBook}
+                  onChange={(e) => setSelectedBook(e.target.value)}
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                >
+                  <option value="">Choose a book...</option>
+                  {books.map(book => (
+                    <option key={book.id} value={book.id}>
+                      {book.title} - {book.author} ({book.pagesRead}/{book.totalPages})
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-2">
+                  Pages Read Today
+                </label>
+                <input
+                  type="number"
+                  value={pagesRead}
+                  onChange={(e) => setPagesRead(e.target.value)}
+                  placeholder="Enter pages..."
+                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-indigo-500 focus:border-transparent"
+                />
+              </div>
+
+              <button
+                onClick={handleAddPages}
+                disabled={!selectedBook || !pagesRead}
+                className="w-full px-6 py-3 bg-indigo-600 text-white rounded-lg font-medium hover:bg-indigo-700 disabled:bg-gray-300 disabled:cursor-not-allowed transition-colors"
+              >
+                Add Pages
+              </button>
+            </div>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-xl p-6">
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-bold text-gray-800">Manage Books</h2>
+              <button
+                onClick={() => setIsAddingBook(!isAddingBook)}
+                className="flex items-center gap-2 px-4 py-2 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700"
+              >
+                <Plus className="w-4 h-4" />
+                Add Book
+              </button>
+            </div>
+
+            {isAddingBook && (
+              <div className="mb-4 p-4 bg-gray-50 rounded-lg space-y-3">
+                <input
+                  type="text"
+                  value={newBookTitle}
+                  onChange={(e) => setNewBookTitle(e.target.value)}
+                  placeholder="Title"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+                <input
+                  type="text"
+                  value={newBookAuthor}
+                  onChange={(e) => setNewBookAuthor(e.target.value)}
+                  placeholder="Author"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+                <input
+                  type="number"
+                  value={newBookPages}
+                  onChange={(e) => setNewBookPages(e.target.value)}
+                  placeholder="Total pages"
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg"
+                />
+                <button
+                  onClick={handleAddBook}
+                  className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700"
+                >
+                  Save Book
+                </button>
+              </div>
+            )}
+
+            <div className="max-h-96 overflow-y-auto space-y-2">
+              {books.sort((a, b) => a.author.localeCompare(b.author)).map(book => (
+                <div key={book.id} className="p-3 bg-gray-50 rounded-lg">
+                  {editingBook?.id === book.id ? (
+                    <div className="space-y-2">
+                      <input
+                        type="text"
+                        value={editingBook.title}
+                        onChange={(e) => setEditingBook({...editingBook, title: e.target.value})}
+                        placeholder="Title"
+                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      />
+                      <input
+                        type="text"
+                        value={editingBook.author}
+                        onChange={(e) => setEditingBook({...editingBook, author: e.target.value})}
+                        placeholder="Author"
+                        className="w-full px-2 py-1 border border-gray-300 rounded text-sm"
+                      />
+                      <div className="flex gap-2">
+                        <input
+                          type="number"
+                          value={editingBook.totalPages}
+                          onChange={(e) => setEditingBook({...editingBook, totalPages: parseInt(e.target.value) || 0})}
+                          className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
+                          placeholder="Total"
+                        />
+                        <input
+                          type="number"
+                          value={editingBook.pagesRead}
+                          onChange={(e) => setEditingBook({...editingBook, pagesRead: parseInt(e.target.value) || 0})}
+                          className="w-24 px-2 py-1 border border-gray-300 rounded text-sm"
+                          placeholder="Read"
+                        />
+                        <button
+                          onClick={handleSaveEdit}
+                          className="px-3 py-1 bg-green-600 text-white rounded text-sm hover:bg-green-700"
+                        >
+                          Save
+                        </button>
+                        <button
+                          onClick={() => setEditingBook(null)}
+                          className="px-3 py-1 bg-gray-400 text-white rounded text-sm hover:bg-gray-500"
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="flex items-start justify-between mb-2">
+                        <div className="flex-1">
+                          <div className="text-sm text-gray-800"><span className="font-semibold">Title:</span> {book.title}</div>
+                          <div className="text-sm text-gray-600"><span className="font-semibold">Author:</span> {book.author}</div>
+                        </div>
+                        <div className="flex items-center gap-2 ml-2">
+                          <button
+                            onClick={() => handleEditBook(book)}
+                            className="text-indigo-600 hover:text-indigo-700"
+                          >
+                            <Edit2 className="w-4 h-4" />
+                          </button>
+                          <button
+                            onClick={() => handleDeleteBook(book.id)}
+                            className="text-red-600 hover:text-red-700"
+                          >
+                            <Trash2 className="w-4 h-4" />
+                          </button>
+                        </div>
+                      </div>
+                      <div className="flex items-center justify-between text-xs text-gray-600">
+                        <span>{book.pagesRead} / {book.totalPages} pages</span>
+                        <span>{((book.pagesRead / book.totalPages) * 100).toFixed(0)}%</span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2 mt-1">
+                        <div 
+                          className="bg-indigo-600 h-2 rounded-full"
+                          style={{ width: `${Math.min((book.pagesRead / book.totalPages) * 100, 100)}%` }}
+                        />
+                      </div>
+                    </>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default ReadingTracker;
